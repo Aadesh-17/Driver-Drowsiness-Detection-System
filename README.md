@@ -1,5 +1,7 @@
 # 🚗 Driver Drowsiness Detection System
 
+> 🌐 **[Live Demo →](https://your-app-name.streamlit.app)** *(update this link after deploying)*
+
 A real-time driver drowsiness detection system using computer vision and facial landmark analysis. It monitors eye closure and yawning to detect signs of fatigue and trigger audio alerts — helping prevent accidents caused by drowsy driving.
 
 ---
@@ -89,8 +91,14 @@ Place an `alarm.wav` file inside the `audio/` directory. If absent, the system f
 
 ## ▶️ Usage
 
+### Desktop (original app)
 ```bash
 python main.py
+```
+
+### Web demo (Streamlit)
+```bash
+streamlit run app.py
 ```
 
 ### Controls

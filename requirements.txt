@@ -1,6 +1,8 @@
-opencv-python
+opencv-python-headless
 dlib
 imutils
 numpy
 scipy
-pygame
+streamlit
+streamlit-webrtc
+av
