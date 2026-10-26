@@ -4,7 +4,3 @@ libopenblas-dev
 liblapack-dev
 libx11-6
 libgl1
-ffmpeg
-libsrtp2-1
-libopus0
-libvpx8
