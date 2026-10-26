@@ -6,7 +6,8 @@ import numpy as np
 import os
 from scipy.spatial import distance as dist
 from imutils import face_utils
-from playsound import playsound
+import pygame
+pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
 
 def eye_aspect_ratio(eye):
     # Compute the euclidean distances between the two sets of
@@ -37,43 +38,31 @@ def mouth_aspect_ratio(mouth):
     return mar
 
 def create_alarm_sound():
-    """Create a simple beep sound if alarm.wav doesn't exist or is empty"""
-    try:
-        import pygame
-        pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
-        
-        def beep_sound():
-            duration = 1000  # milliseconds
-            sample_rate = 22050
-            frames = int(duration * sample_rate / 1000)
-            
-            arr = np.zeros((frames, 2))
-            
-            # Generate a 1000Hz beep
-            for i in range(frames):
-                wave = 4096 * np.sin(2 * np.pi * 1000 * i / sample_rate)
-                arr[i][0] = wave
-                arr[i][1] = wave
-            
-            sound = pygame.sndarray.make_sound(arr.astype(np.int16))
-            sound.play()
-            
-        return beep_sound
-    except:
-        # Fallback: use system beep
-        return lambda: os.system('afplay /System/Library/Sounds/Ping.aiff')
+    """Create a simple beep sound using pygame"""
+    def beep_sound():
+        duration = 1000  # milliseconds
+        sample_rate = 22050
+        frames = int(duration * sample_rate / 1000)
+        arr = np.zeros((frames, 2))
+        for i in range(frames):
+            wave = 4096 * np.sin(2 * np.pi * 1000 * i / sample_rate)
+            arr[i][0] = wave
+            arr[i][1] = wave
+        sound = pygame.sndarray.make_sound(arr.astype(np.int16))
+        sound.play()
+        pygame.time.wait(duration)
+    return beep_sound
 
 def sound_alarm(path):
     try:
-        # Try to play the alarm file first
         if os.path.exists(path) and os.path.getsize(path) > 0:
-            playsound(path)
+            pygame.mixer.music.load(path)
+            pygame.mixer.music.play()
+            pygame.time.wait(2000)
         else:
-            # Use system sound as fallback
-            os.system('afplay /System/Library/Sounds/Ping.aiff')
+            backup_alarm()
     except Exception as e:
         print(f"Alarm error: {e}")
-        # Final fallback - terminal bell
         print('\a' * 3)
 
 # Improved thresholds
