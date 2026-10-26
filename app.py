@@ -1,15 +1,6 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
-import cv2
-import dlib
-import numpy as np
-from scipy.spatial import distance as dist
-from imutils import face_utils
-import av
-import threading
-import os
-import urllib.request
-import bz2
+import sys
+import traceback
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -17,6 +8,27 @@ st.set_page_config(
     page_icon="🚗",
     layout="wide",
 )
+
+try:
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
+    import cv2
+    import dlib
+    import numpy as np
+    from scipy.spatial import distance as dist
+    from imutils import face_utils
+    import av
+except Exception as e:
+    st.error(f"⚠️ Dependency Import Error: {e}")
+    st.markdown("### Detailed Traceback:")
+    st.code(traceback.format_exc())
+    st.markdown(f"**Python executable:** `{sys.executable}`")
+    st.markdown(f"**Python version:** `{sys.version}`")
+    st.stop()
+
+import threading
+import os
+import urllib.request
+import bz2
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
