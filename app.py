@@ -1,5 +1,10 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+try:
+    from streamlit_webrtc import WebRtcMode
+except ImportError:
+    from streamlit_webrtc import VideoTransformerBase as VideoProcessorBase  # fallback
+    WebRtcMode = None
 import cv2
 import dlib
 import numpy as np
@@ -236,7 +241,7 @@ vid_col, stat_col = st.columns([3, 1])
 with vid_col:
     ctx = webrtc_streamer(
         key="drowsiness-detector",
-        mode=WebRtcMode.SENDRECV,
+        **( {"mode": WebRtcMode.SENDRECV} if WebRtcMode else {} ),
         rtc_configuration=RTC_CONFIG,
         video_processor_factory=DrowsinessDetector,
         media_stream_constraints={"video": True, "audio": False},
