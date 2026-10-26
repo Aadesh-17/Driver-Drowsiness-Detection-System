@@ -66,10 +66,10 @@ def sound_alarm(path):
         print('\a' * 3)
 
 # Improved thresholds
-EYE_AR_THRESH = 0.3     # Increased threshold for better accuracy
-EYE_AR_CONSEC_FRAMES = 15  # Reduced frames for faster detection
-MOUTH_AR_THRESH = 0.5   # Threshold for yawning detection
-YAWN_CONSEC_FRAMES = 15
+EYE_AR_THRESH = 0.3        # EAR below this is considered a closed eye
+EYE_AR_CONSEC_FRAMES = 30  # ~1 sec at 30fps — avoids triggering on normal blinks
+MOUTH_AR_THRESH = 0.5      # Threshold for yawning detection
+YAWN_CONSEC_FRAMES = 25    # ~0.8 sec at 30fps
 
 # Counters
 EYE_COUNTER = 0
@@ -157,7 +157,7 @@ while True:
             
             if EYE_COUNTER >= EYE_AR_CONSEC_FRAMES:
                 # Throttle alarms to prevent spam (minimum 3 seconds between alarms)
-                if current_time - LAST_ALARM_TIME > 3.0:
+                if current_time - LAST_ALARM_TIME > 6.0:
                     LAST_ALARM_TIME = current_time
                     threading.Thread(target=sound_alarm, args=('audio/alarm.wav',), daemon=True).start()
                     print(f"DROWSINESS ALERT! EAR: {ear:.3f}")
@@ -178,7 +178,7 @@ while True:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                 
                 # Light alarm for yawning (less intrusive)
-                if current_time - LAST_ALARM_TIME > 5.0:
+                if current_time - LAST_ALARM_TIME > 8.0:
                     LAST_ALARM_TIME = current_time
                     print('\a')  # Simple beep
                     print(f"Yawning detected! MAR: {mar:.3f}")
