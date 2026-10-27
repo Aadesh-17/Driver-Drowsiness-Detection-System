@@ -1,9 +1,6 @@
 opencv-python-headless
-dlib
-imutils
 numpy
-scipy
 streamlit
 streamlit-webrtc
+mediapipe
 av
-setuptools

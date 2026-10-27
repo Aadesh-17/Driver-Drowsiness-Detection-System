@@ -1,7 +1,6 @@
 import streamlit as st
 import sys
 import traceback
-import subprocess
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -11,38 +10,24 @@ st.set_page_config(
 )
 
 try:
-    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
+    from streamlit_webrtc import (
+        webrtc_streamer,
+        VideoProcessorBase,
+        RTCConfiguration,
+        WebRtcMode,
+    )
     import cv2
-    import dlib
+    import mediapipe as mp
     import numpy as np
-    from scipy.spatial import distance as dist
-    from imutils import face_utils
     import av
 except Exception as e:
     st.error(f"⚠️ Import failed: `{e}`")
     st.code(traceback.format_exc())
     st.markdown(f"**Python:** `{sys.executable}` — `{sys.version}`")
-    st.markdown(f"**sys.path:**")
-    st.code("\n".join(sys.path))
-
-    # Show what uv actually installed
-    r = subprocess.run([sys.executable, "-m", "pip", "list"], capture_output=True, text=True)
-    st.markdown("### Installed packages:")
-    st.code(r.stdout or r.stderr)
-
-    # Try manual pip install and show output
-    st.markdown("### Attempting manual install of streamlit-webrtc...")
-    r2 = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "streamlit-webrtc"],
-        capture_output=True, text=True
-    )
-    st.code(f"STDOUT:\n{r2.stdout}\n\nSTDERR:\n{r2.stderr}\n\nReturn code: {r2.returncode}")
     st.stop()
 
 import threading
 import os
-import urllib.request
-import bz2
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -63,46 +48,72 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Model path & download ─────────────────────────────────────────────────────
-MODEL_PATH = "models/shape_predictor_68_face_landmarks.dat"
-MODEL_BZ2  = MODEL_PATH + ".bz2"
-MODEL_URL  = "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2"
+# ── MediaPipe Face Mesh landmark indices ──────────────────────────────────────
+# 6-point eye landmarks: [lateral, upper1, upper2, medial, lower2, lower1]
+RIGHT_EYE_IDX = [33, 160, 158, 133, 153, 144]
+LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380]
 
-@st.cache_resource(show_spinner=False)
-def load_models():
-    """Load dlib detector and predictor, downloading the landmark model if absent."""
-    if not os.path.exists(MODEL_PATH):
-        os.makedirs("models", exist_ok=True)
-        with st.spinner("⬇️ Downloading facial landmark model (~95 MB) — first run only…"):
-            urllib.request.urlretrieve(MODEL_URL, MODEL_BZ2)
-            with bz2.open(MODEL_BZ2, "rb") as f_in, open(MODEL_PATH, "wb") as f_out:
-                f_out.write(f_in.read())
-            os.remove(MODEL_BZ2)
+# Mouth landmarks for MAR
+UPPER_LIP_IDX   = [82, 13, 312]     # left-inner, center, right-inner
+LOWER_LIP_IDX   = [87, 14, 317]     # left-inner, center, right-inner
+MOUTH_CORNER_IDX = [78, 308]        # left corner, right corner
 
-    detector  = dlib.get_frontal_face_detector()
-    predictor = dlib.shape_predictor(MODEL_PATH)
-    return detector, predictor
+# Full contour indices for drawing
+RIGHT_EYE_CONTOUR = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+LEFT_EYE_CONTOUR  = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+LIPS_CONTOUR = [
+    61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291,
+    409, 270, 269, 267, 0, 37, 39, 40, 185, 61,
+]
+
 
 # ── Ratio helpers ─────────────────────────────────────────────────────────────
-def eye_aspect_ratio(eye):
-    A = dist.euclidean(eye[1], eye[5])
-    B = dist.euclidean(eye[2], eye[4])
-    C = dist.euclidean(eye[0], eye[3])
+def eye_aspect_ratio(landmarks, indices, w, h):
+    """Compute EAR from 6 landmark points."""
+    pts = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in indices])
+    A = np.linalg.norm(pts[1] - pts[5])   # upper1 ↔ lower1
+    B = np.linalg.norm(pts[2] - pts[4])   # upper2 ↔ lower2
+    C = np.linalg.norm(pts[0] - pts[3])   # lateral ↔ medial
+    if C == 0:
+        return 0.0
     return (A + B) / (2.0 * C)
 
-def mouth_aspect_ratio(mouth):
-    A = dist.euclidean(mouth[2], mouth[10])
-    B = dist.euclidean(mouth[4], mouth[8])
-    C = dist.euclidean(mouth[0], mouth[6])
-    return (A + B) / (2.0 * C)
+
+def mouth_aspect_ratio(landmarks, upper_idx, lower_idx, corner_idx, w, h):
+    """Compute MAR from upper-lip, lower-lip, and corner landmarks."""
+    upper = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in upper_idx])
+    lower = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in lower_idx])
+    corners = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in corner_idx])
+
+    # Three vertical distances
+    A = np.linalg.norm(upper[0] - lower[0])
+    B = np.linalg.norm(upper[1] - lower[1])
+    C = np.linalg.norm(upper[2] - lower[2])
+    # Horizontal distance
+    D = np.linalg.norm(corners[0] - corners[1])
+    if D == 0:
+        return 0.0
+    return (A + B + C) / (3.0 * D)
+
+
+def get_contour_pts(landmarks, indices, w, h):
+    """Return numpy contour points for drawing."""
+    return np.array(
+        [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in indices],
+        dtype=np.int32,
+    )
+
 
 # ── Video Processor ───────────────────────────────────────────────────────────
 class DrowsinessDetector(VideoProcessorBase):
     def __init__(self):
-        self.detector, self.predictor = load_models()
-        (self.lStart, self.lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
-        (self.rStart, self.rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
-        (self.mStart, self.mEnd) = face_utils.FACIAL_LANDMARKS_IDXS["mouth"]
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
 
         self.eye_counter   = 0
         self.mouth_counter = 0
@@ -117,58 +128,56 @@ class DrowsinessDetector(VideoProcessorBase):
             "mouth_counter": 0,
         }
 
-        # Thresholds — updated from UI
-        self.ear_thresh  = 0.3
+        # Thresholds — updated from sidebar sliders
+        self.ear_thresh  = 0.25
         self.ear_frames  = 30
-        self.mar_thresh  = 0.5
+        self.mar_thresh  = 0.6
         self.yawn_frames = 25
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        img  = frame.to_ndarray(format="bgr24")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = self.detector(gray, 0)
+        img = frame.to_ndarray(format="bgr24")
+        h, w = img.shape[:2]
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        results = self.face_mesh.process(rgb)
 
         status = "ALERT"
         ear    = 0.0
         mar    = 0.0
 
-        if len(faces) == 0:
+        if not results.multi_face_landmarks:
             cv2.putText(img, "No face detected", (10, 35),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
             self.eye_counter   = 0
             self.mouth_counter = 0
             status = "WAITING"
+        else:
+            face = results.multi_face_landmarks[0]
+            lm   = face.landmark
 
-        for face in faces:
-            shape = face_utils.shape_to_np(self.predictor(gray, face))
+            # ── Compute ratios ────────────────────────────────────────────
+            left_ear  = eye_aspect_ratio(lm, LEFT_EYE_IDX, w, h)
+            right_ear = eye_aspect_ratio(lm, RIGHT_EYE_IDX, w, h)
+            ear = (left_ear + right_ear) / 2.0
+            mar = mouth_aspect_ratio(lm, UPPER_LIP_IDX, LOWER_LIP_IDX,
+                                     MOUTH_CORNER_IDX, w, h)
 
-            leftEye  = shape[self.lStart:self.lEnd]
-            rightEye = shape[self.rStart:self.rEnd]
-            mouth    = shape[self.mStart:self.mEnd]
+            # ── Draw contours ─────────────────────────────────────────────
+            le_pts = get_contour_pts(lm, LEFT_EYE_CONTOUR, w, h)
+            re_pts = get_contour_pts(lm, RIGHT_EYE_CONTOUR, w, h)
+            mp_pts = get_contour_pts(lm, LIPS_CONTOUR, w, h)
 
-            ear = (eye_aspect_ratio(leftEye) + eye_aspect_ratio(rightEye)) / 2.0
-            mar = mouth_aspect_ratio(mouth)
+            cv2.polylines(img, [le_pts], True, (0, 255, 0), 1)
+            cv2.polylines(img, [re_pts], True, (0, 255, 0), 1)
+            cv2.polylines(img, [mp_pts], True, (0, 255, 255), 1)
 
-            # Draw facial contours
-            cv2.drawContours(img, [cv2.convexHull(leftEye)],  -1, (0, 255, 0),   1)
-            cv2.drawContours(img, [cv2.convexHull(rightEye)], -1, (0, 255, 0),   1)
-            cv2.drawContours(img, [cv2.convexHull(mouth)],    -1, (0, 255, 255), 1)
-
-            # Face bounding box
-            cv2.rectangle(img,
-                          (face.left(), face.top()),
-                          (face.right(), face.bottom()),
-                          (200, 200, 200), 1)
-
-            # ── Drowsiness detection ──────────────────────────────────────────
+            # ── Drowsiness detection ──────────────────────────────────────
             if ear < self.ear_thresh:
                 self.eye_counter += 1
                 if self.eye_counter >= self.ear_frames:
                     status = "DROWSY"
-                    # Red tint overlay
                     overlay = img.copy()
-                    cv2.rectangle(overlay, (0, 0), (img.shape[1], img.shape[0]),
-                                  (0, 0, 200), -1)
+                    cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 200), -1)
                     img = cv2.addWeighted(overlay, 0.12, img, 0.88, 0)
                     cv2.putText(img, "DROWSINESS ALERT!", (10, 40),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
@@ -177,7 +186,7 @@ class DrowsinessDetector(VideoProcessorBase):
             else:
                 self.eye_counter = 0
 
-            # ── Yawn detection ────────────────────────────────────────────────
+            # ── Yawn detection ────────────────────────────────────────────
             if mar > self.mar_thresh:
                 self.mouth_counter += 1
                 if self.mouth_counter >= self.yawn_frames:
@@ -188,20 +197,18 @@ class DrowsinessDetector(VideoProcessorBase):
             else:
                 self.mouth_counter = 0
 
-            # ── Status dot (top-right) ────────────────────────────────────────
+            # ── Status dot (top-right) ────────────────────────────────────
             dot_color = {
                 "ALERT":   (0, 220, 0),
                 "DROWSY":  (0, 0, 255),
                 "YAWNING": (0, 220, 220),
-                "WAITING": (150, 150, 150),
             }.get(status, (150, 150, 150))
 
-            cx = img.shape[1] - 28
+            cx = w - 28
             cv2.circle(img, (cx, 28), 16, dot_color, -1)
             cv2.circle(img, (cx, 28), 16, (255, 255, 255), 2)
 
-            # ── Metrics bar (bottom-left) ─────────────────────────────────────
-            h = img.shape[0]
+            # ── Metrics bar (bottom-left) ─────────────────────────────────
             cv2.rectangle(img, (0, h - 55), (230, h), (0, 0, 0), -1)
             cv2.putText(img, f"EAR: {ear:.3f}  (thresh {self.ear_thresh:.2f})",
                         (8, h - 32), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
@@ -233,7 +240,7 @@ RTC_CONFIG = RTCConfiguration({
 st.title("🚗 Driver Drowsiness Detection System")
 st.markdown(
     "Real-time fatigue monitoring using **Eye Aspect Ratio (EAR)** and "
-    "**Mouth Aspect Ratio (MAR)** from dlib's 68-point facial landmark detector. "
+    "**Mouth Aspect Ratio (MAR)** from MediaPipe's 468-point face mesh. "
     "Allow camera access and click **START** to begin."
 )
 st.divider()
@@ -242,15 +249,15 @@ st.divider()
 with st.sidebar:
     st.header("⚙️ Detection Settings")
     st.subheader("👁️ Eye (Drowsiness)")
-    ear_thresh = st.slider("EAR Threshold",   0.10, 0.50, 0.30, 0.01,
+    ear_thresh = st.slider("EAR Threshold",   0.10, 0.50, 0.25, 0.01,
                            help="EAR drops below this → eye is considered closed")
     ear_frames = st.slider("Consec. Frames",  10, 60, 30,
                            help="How many frames eyes must stay closed (~30 = 1 sec at 30 fps)")
 
     st.subheader("😮 Mouth (Yawning)")
-    mar_thresh  = st.slider("MAR Threshold",   0.30, 0.80, 0.50, 0.01,
+    mar_thresh  = st.slider("MAR Threshold",   0.30, 1.00, 0.60, 0.01,
                             help="MAR rises above this → mouth is considered open")
-    yawn_frames = st.slider("Consec. Frames",  10, 50, 25,
+    yawn_frames = st.slider("Consec. Frames ",  10, 50, 25,
                             help="How many frames mouth must stay open")
 
     st.divider()
@@ -293,12 +300,12 @@ with stat_col:
         css_cls, label = css_map.get(status, ("alert-gray", "⚪ WAITING"))
         st.markdown(
             f'<div class="status-box {css_cls}">{label}</div>',
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
         st.metric("EAR",
                   f"{res['ear']:.3f}",
-                  delta="⚠ closed" if res["ear"] < ear_thresh and res["ear"] > 0 else "open",
+                  delta="⚠ closed" if 0 < res["ear"] < ear_thresh else "open",
                   delta_color="inverse")
         st.metric("MAR",
                   f"{res['mar']:.3f}",
@@ -311,7 +318,7 @@ with stat_col:
     else:
         st.markdown(
             '<div class="status-box alert-gray">⚪ WAITING</div>',
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
         for label in ("EAR", "MAR", "Eye counter", "Mouth counter"):
             st.metric(label, "—")
@@ -329,7 +336,7 @@ Computed from 6 eye landmark points:
 
 > EAR = (‖p₂−p₆‖ + ‖p₃−p₅‖) / (2 · ‖p₁−p₄‖)
 
-- Open eye → EAR ≈ 0.25–0.35
+- Open eye → EAR ≈ 0.20–0.35
 - Closed eye → EAR ≈ 0.0–0.15
 - Alert fires when EAR stays below threshold for N consecutive frames
         """)
@@ -339,13 +346,13 @@ Computed from 6 eye landmark points:
 
 Computed from 8 mouth landmark points:
 
-> MAR = (‖p₃−p₁₁‖ + ‖p₅−p₉‖) / (2 · ‖p₁−p₇‖)
+> MAR = (‖u₁−l₁‖ + ‖u₂−l₂‖ + ‖u₃−l₃‖) / (3 · ‖c₁−c₂‖)
 
 - Closed mouth → MAR ≈ 0.2–0.4
-- Yawning mouth → MAR ≈ 0.6–0.9
+- Yawning mouth → MAR ≈ 0.7–1.0
 - Alert fires when MAR stays above threshold for N consecutive frames
         """)
     st.markdown("""
-**Stack:** `dlib` · `OpenCV` · `imutils` · `scipy` · `streamlit-webrtc`  
-**Model:** dlib's 68-point shape predictor trained on iBUG 300-W dataset
+**Stack:** `MediaPipe` · `OpenCV` · `streamlit-webrtc`
+**Model:** MediaPipe FaceMesh — 468-point face landmark model
     """)
