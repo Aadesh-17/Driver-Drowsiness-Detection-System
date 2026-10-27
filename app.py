@@ -1,6 +1,8 @@
 import streamlit as st
 import sys
 import traceback
+import subprocess
+import importlib
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -8,6 +10,27 @@ st.set_page_config(
     page_icon="🚗",
     layout="wide",
 )
+
+# ── Auto-install missing packages ────────────────────────────────────────────
+def ensure_package(import_name, pip_name=None):
+    """Try to import a package; if missing, pip-install it into the current env."""
+    pip_name = pip_name or import_name
+    try:
+        importlib.import_module(import_name)
+    except ImportError:
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "--quiet", pip_name
+        ])
+
+for imp, pip in [
+    ("streamlit_webrtc", "streamlit-webrtc"),
+    ("cv2", "opencv-python-headless"),
+    ("dlib", "dlib"),
+    ("imutils", "imutils"),
+    ("av", "av"),
+    ("scipy", "scipy"),
+]:
+    ensure_package(imp, pip)
 
 try:
     from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
@@ -18,11 +41,18 @@ try:
     from imutils import face_utils
     import av
 except Exception as e:
+    # Show full diagnostic info
     st.error(f"⚠️ Dependency Import Error: {e}")
     st.markdown("### Detailed Traceback:")
     st.code(traceback.format_exc())
-    st.markdown(f"**Python executable:** `{sys.executable}`")
-    st.markdown(f"**Python version:** `{sys.version}`")
+    st.markdown(f"**Python:** `{sys.executable}` — `{sys.version}`")
+    # List installed packages
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "list"],
+        capture_output=True, text=True
+    )
+    st.markdown("### Installed Packages:")
+    st.code(result.stdout[-3000:] if len(result.stdout) > 3000 else result.stdout)
     st.stop()
 
 import threading
