@@ -20,10 +20,23 @@ try:
     import mediapipe as mp
     import numpy as np
     import av
+
+    # Validate mp.solutions is available (fails on some stripped builds)
+    mp_face_mesh_module = mp.solutions.face_mesh
 except Exception as e:
     st.error(f"⚠️ Import failed: `{e}`")
     st.code(traceback.format_exc())
     st.markdown(f"**Python:** `{sys.executable}` — `{sys.version}`")
+    # Show mediapipe details
+    try:
+        import mediapipe
+        st.markdown(f"**mediapipe version:** `{mediapipe.__version__}`")
+        st.markdown(f"**mediapipe location:** `{mediapipe.__file__}`")
+        st.markdown(f"**dir(mediapipe):** `{dir(mediapipe)}`")
+        if hasattr(mediapipe, 'solutions'):
+            st.markdown(f"**dir(mediapipe.solutions):** `{dir(mediapipe.solutions)}`")
+    except Exception:
+        pass
     st.stop()
 
 import threading
@@ -107,8 +120,7 @@ def get_contour_pts(landmarks, indices, w, h):
 # ── Video Processor ───────────────────────────────────────────────────────────
 class DrowsinessDetector(VideoProcessorBase):
     def __init__(self):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
+        self.face_mesh = mp_face_mesh_module.FaceMesh(
             max_num_faces=1,
             refine_landmarks=True,
             min_detection_confidence=0.5,
