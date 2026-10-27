@@ -1,5 +1,6 @@
 import streamlit as st
 import sys
+import os
 import traceback
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -20,8 +21,29 @@ try:
     import mediapipe as mp
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision
+    from mediapipe.tasks.python.core.mediapipe_c_bindings import load_raw_library
     import numpy as np
     import av
+
+    # Test loading the MediaPipe C library immediately to catch any missing system .so
+    try:
+        load_raw_library()
+    except OSError as dl_err:
+        import subprocess, glob
+        so_files = glob.glob(os.path.join(os.path.dirname(mp.__file__), "**/*.so*"), recursive=True)
+        ldd_info = ""
+        for so in so_files:
+            res = subprocess.run(["ldd", so], capture_output=True, text=True)
+            if "not found" in res.stdout:
+                ldd_info += f"\n--- ldd {os.path.basename(so)} ---\n{res.stdout}"
+        st.error(f"⚠️ MediaPipe dlopen error: {dl_err}")
+        if ldd_info:
+            st.markdown("### Missing Shared Libraries (from `ldd`):")
+            st.code(ldd_info)
+        else:
+            st.code(traceback.format_exc())
+        st.stop()
+
 except Exception as e:
     st.error(f"⚠️ Import failed: `{e}`")
     st.code(traceback.format_exc())
