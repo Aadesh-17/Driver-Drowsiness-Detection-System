@@ -18,29 +18,19 @@ try:
     )
     import cv2
     import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision
     import numpy as np
     import av
-
-    # Validate mp.solutions is available (fails on some stripped builds)
-    mp_face_mesh_module = mp.solutions.face_mesh
 except Exception as e:
     st.error(f"⚠️ Import failed: `{e}`")
     st.code(traceback.format_exc())
     st.markdown(f"**Python:** `{sys.executable}` — `{sys.version}`")
-    # Show mediapipe details
-    try:
-        import mediapipe
-        st.markdown(f"**mediapipe version:** `{mediapipe.__version__}`")
-        st.markdown(f"**mediapipe location:** `{mediapipe.__file__}`")
-        st.markdown(f"**dir(mediapipe):** `{dir(mediapipe)}`")
-        if hasattr(mediapipe, 'solutions'):
-            st.markdown(f"**dir(mediapipe.solutions):** `{dir(mediapipe.solutions)}`")
-    except Exception:
-        pass
     st.stop()
 
 import threading
 import os
+import urllib.request
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -61,17 +51,30 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Download face landmarker model ────────────────────────────────────────────
+MODEL_PATH = "face_landmarker.task"
+MODEL_URL  = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
+
+@st.cache_resource(show_spinner=False)
+def download_model():
+    if not os.path.exists(MODEL_PATH):
+        with st.spinner("⬇️ Downloading face landmarker model (~5 MB) — first run only…"):
+            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    return MODEL_PATH
+
+model_path = download_model()
+
 # ── MediaPipe Face Mesh landmark indices ──────────────────────────────────────
 # 6-point eye landmarks: [lateral, upper1, upper2, medial, lower2, lower1]
 RIGHT_EYE_IDX = [33, 160, 158, 133, 153, 144]
 LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380]
 
 # Mouth landmarks for MAR
-UPPER_LIP_IDX   = [82, 13, 312]     # left-inner, center, right-inner
-LOWER_LIP_IDX   = [87, 14, 317]     # left-inner, center, right-inner
-MOUTH_CORNER_IDX = [78, 308]        # left corner, right corner
+UPPER_LIP_IDX    = [82, 13, 312]
+LOWER_LIP_IDX    = [87, 14, 317]
+MOUTH_CORNER_IDX = [78, 308]
 
-# Full contour indices for drawing
+# Contour indices for drawing
 RIGHT_EYE_CONTOUR = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
 LEFT_EYE_CONTOUR  = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
 LIPS_CONTOUR = [
@@ -82,27 +85,22 @@ LIPS_CONTOUR = [
 
 # ── Ratio helpers ─────────────────────────────────────────────────────────────
 def eye_aspect_ratio(landmarks, indices, w, h):
-    """Compute EAR from 6 landmark points."""
     pts = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in indices])
-    A = np.linalg.norm(pts[1] - pts[5])   # upper1 ↔ lower1
-    B = np.linalg.norm(pts[2] - pts[4])   # upper2 ↔ lower2
-    C = np.linalg.norm(pts[0] - pts[3])   # lateral ↔ medial
+    A = np.linalg.norm(pts[1] - pts[5])
+    B = np.linalg.norm(pts[2] - pts[4])
+    C = np.linalg.norm(pts[0] - pts[3])
     if C == 0:
         return 0.0
     return (A + B) / (2.0 * C)
 
 
 def mouth_aspect_ratio(landmarks, upper_idx, lower_idx, corner_idx, w, h):
-    """Compute MAR from upper-lip, lower-lip, and corner landmarks."""
-    upper = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in upper_idx])
-    lower = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in lower_idx])
+    upper   = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in upper_idx])
+    lower   = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in lower_idx])
     corners = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in corner_idx])
-
-    # Three vertical distances
     A = np.linalg.norm(upper[0] - lower[0])
     B = np.linalg.norm(upper[1] - lower[1])
     C = np.linalg.norm(upper[2] - lower[2])
-    # Horizontal distance
     D = np.linalg.norm(corners[0] - corners[1])
     if D == 0:
         return 0.0
@@ -110,7 +108,6 @@ def mouth_aspect_ratio(landmarks, upper_idx, lower_idx, corner_idx, w, h):
 
 
 def get_contour_pts(landmarks, indices, w, h):
-    """Return numpy contour points for drawing."""
     return np.array(
         [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in indices],
         dtype=np.int32,
@@ -120,18 +117,20 @@ def get_contour_pts(landmarks, indices, w, h):
 # ── Video Processor ───────────────────────────────────────────────────────────
 class DrowsinessDetector(VideoProcessorBase):
     def __init__(self):
-        self.face_mesh = mp_face_mesh_module.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+        base_options = mp_python.BaseOptions(model_asset_path=model_path)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+            num_faces=1,
+            running_mode=vision.RunningMode.IMAGE,
         )
+        self.detector = vision.FaceLandmarker.create_from_options(options)
 
         self.eye_counter   = 0
         self.mouth_counter = 0
         self._lock = threading.Lock()
 
-        # Live result shared with the UI thread
         self.result = {
             "status": "WAITING",
             "ear": 0.0,
@@ -151,21 +150,22 @@ class DrowsinessDetector(VideoProcessorBase):
         h, w = img.shape[:2]
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        results = self.face_mesh.process(rgb)
+        # Detect face landmarks using the Tasks API
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        detection = self.detector.detect(mp_image)
 
         status = "ALERT"
         ear    = 0.0
         mar    = 0.0
 
-        if not results.multi_face_landmarks:
+        if not detection.face_landmarks:
             cv2.putText(img, "No face detected", (10, 35),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
             self.eye_counter   = 0
             self.mouth_counter = 0
             status = "WAITING"
         else:
-            face = results.multi_face_landmarks[0]
-            lm   = face.landmark
+            lm = detection.face_landmarks[0]  # First face
 
             # ── Compute ratios ────────────────────────────────────────────
             left_ear  = eye_aspect_ratio(lm, LEFT_EYE_IDX, w, h)
@@ -288,7 +288,6 @@ with vid_col:
         async_processing=True,
     )
 
-    # Push updated thresholds into the processor
     if ctx.video_processor:
         ctx.video_processor.ear_thresh  = ear_thresh
         ctx.video_processor.ear_frames  = ear_frames
@@ -365,6 +364,6 @@ Computed from 8 mouth landmark points:
 - Alert fires when MAR stays above threshold for N consecutive frames
         """)
     st.markdown("""
-**Stack:** `MediaPipe` · `OpenCV` · `streamlit-webrtc`
-**Model:** MediaPipe FaceMesh — 468-point face landmark model
+**Stack:** `MediaPipe Tasks` · `OpenCV` · `streamlit-webrtc`
+**Model:** MediaPipe FaceLandmarker — 468-point face mesh (float16)
     """)
