@@ -81,7 +81,12 @@ MODEL_URL  = "https://storage.googleapis.com/mediapipe-models/face_landmarker/fa
 def download_model():
     if not os.path.exists(MODEL_PATH):
         with st.spinner("⬇️ Downloading face landmarker model (~5 MB) — first run only…"):
-            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+            req = urllib.request.Request(
+                MODEL_URL,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req) as resp, open(MODEL_PATH, "wb") as f:
+                f.write(resp.read())
     return MODEL_PATH
 
 model_path = download_model()
