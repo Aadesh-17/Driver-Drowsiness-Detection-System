@@ -267,13 +267,30 @@ class DrowsinessDetector(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 
-# ── RTC config (public STUN servers) ─────────────────────────────────────────
-RTC_CONFIG = RTCConfiguration({
-    "iceServers": [
-        {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
+# ── RTC config (STUN + optional TURN from secrets) ───────────────────────────
+def get_rtc_configuration():
+    ice_servers = [
+        {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"]}
     ]
-})
+    try:
+        if "webrtc" in st.secrets:
+            sec = st.secrets["webrtc"]
+            turn_entry = {}
+            if "urls" in sec:
+                turn_entry["urls"] = sec["urls"]
+            elif "turn_url" in sec:
+                turn_entry["urls"] = sec["turn_url"]
+            if "username" in sec:
+                turn_entry["username"] = sec["username"]
+            if "credential" in sec:
+                turn_entry["credential"] = sec["credential"]
+            elif "password" in sec:
+                turn_entry["credential"] = sec["password"]
+            if turn_entry.get("urls"):
+                ice_servers.append(turn_entry)
+    except Exception:
+        pass
+    return RTCConfiguration({"iceServers": ice_servers})
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("🚗 Driver Drowsiness Detection System")
@@ -300,6 +317,21 @@ with st.sidebar:
                             help="How many frames mouth must stay open")
 
     st.divider()
+    with st.expander("🌐 Cloud Network (STUN/TURN)"):
+        try:
+            has_turn = "webrtc" in st.secrets
+        except Exception:
+            has_turn = False
+
+        if has_turn:
+            st.success("✅ TURN server configured via Secrets")
+        else:
+            st.info(
+                "If camera connection times out on cloud, configure a free TURN server in "
+                "Streamlit Cloud **Settings → Secrets**."
+            )
+            st.caption("[Get Free TURN Credentials (50GB/mo) →](https://www.metered.ca/tools/openrelay)")
+
     st.caption("Adjust sliders to suit your lighting and face.")
 
 # ── Layout ────────────────────────────────────────────────────────────────────
@@ -309,7 +341,7 @@ with vid_col:
     ctx = webrtc_streamer(
         key="drowsiness-detector",
         mode=WebRtcMode.SENDRECV,
-        rtc_configuration=RTC_CONFIG,
+        rtc_configuration=get_rtc_configuration(),
         video_processor_factory=DrowsinessDetector,
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
